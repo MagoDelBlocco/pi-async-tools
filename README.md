@@ -44,7 +44,7 @@ The extension introduces **no new tool names** beyond `async_tools`:
 | `bash` (override, same name) | Built-in bash with automatic handoff. |
 | `async_tools` | Minimal job control — exactly two actions: `wait` (block until a job settles, return its full result; capped at 300 s, abort-aware) and `kill` (terminate a running job). |
 | `/async_jobs` | Human-facing job overview (list with status, elapsed time, results). |
-| Widget | Below-editor line `Async: N background job(s) running` + up to 5 entries, **green** while jobs run (theme `success` token, oculus factory/`theme.fg` convention). Hidden entirely — `setWidget(key, undefined)` — when nothing runs. Snapshot over the job registry (single source of truth); repaint on every settle via the registry's observer channel (independent of the notification path, so a fast synchronous call cannot leave a stale "running" paint), on spawn, and on `async_tools` actions; headless-safe no-op. |
+| Footer status item | `async: N running` badge, **green** while jobs run — same liturgy as `guardrails: active` / `oculus: clean`: `ui.setStatus("async", ui.theme.bg("toolSuccessBg", ui.theme.fg("success", label)))`. Hidden (`setStatus(key, undefined)`) when nothing runs; plain label on unthemed UIs. Reads the job registry at render time (single source of truth); repaints on every settle via the registry's observer channel (independent of the notification path, so a fast synchronous call cannot leave a stale "1 running"), on spawn, and on `async_tools` actions. No below-editor widget — one compact slot like the sibling extensions. |
 
 Flags:
 
@@ -119,15 +119,14 @@ the real, final result.
 ## Files
 
 - `index.ts` — entry point: flags, registration, nested-call tracking, lifecycle.
-- `engine.ts` — managed execution: spawn, threshold race, signal linking, handoff placeholder, steered notification injection, UI refresh.
-- `jobs.ts` — dependency-free job registry (spawn/settle/cancel/notify, `awaitWithHandoff`).
-- `widget.ts` — oculus-style below-editor widget (factory component, green via `theme.fg("success")`, hidden when idle, headless-safe).
+- `engine.ts` — managed execution: spawn, threshold race, signal linking, handoff placeholder, steered notification injection, footer status item (guardrails/oculus styling).
+- `jobs.ts` — dependency-free job registry (spawn/settle/cancel/notify, `onObserve` lifecycle channel, `awaitWithHandoff`).
 - `util.ts` — flag parsing, abort-aware race.
 - `tools/async-bash.ts` — `bash` override.
 - `tools/job-control.ts` — `async_tools` (`wait` / `kill` only).
 - `test/engine.test.mjs` — engine unit trials (pure Node).
-- `test/loader.test.mjs` — loads `index.ts` against a simulated ExtensionAPI and drives real bash execution, guards, kill, and the widget.
-- `test/comprehensive.test.mjs` — full battery: S1 `jobs.ts` unit (registry, transitions, notifications, formatters), S2 `util.ts` unit, S3 `engine.ts` unit + `widget.ts` unit (handoff race, nested mode, signal linking/detach, delivery modes, UI repaint), S4 integration (registration, bash override incl. exit codes and `timeout`, `wait`/`kill` matrix, `/async_jobs`, widget lifecycle, nested-call tracking, shutdown, flag effects, concurrency, abort-during-wait).
+- `test/loader.test.mjs` — loads `index.ts` against a simulated ExtensionAPI and drives real bash execution, guards, kill, and the footer status badge.
+- `test/comprehensive.test.mjs` — full battery: S1 `jobs.ts` unit (registry, transitions, notifications, observers, formatters), S2 `util.ts` unit, S3 `engine.ts` unit (handoff race, nested mode, signal linking/detach, delivery modes, footer status styling + stale-status regression), S4 integration (registration, bash override incl. exit codes and `timeout`, `wait`/`kill` matrix, `/async_jobs`, status lifecycle, nested-call tracking, shutdown, flag effects, concurrency, abort-during-wait).
 
 ## Verification
 

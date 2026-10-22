@@ -18,7 +18,7 @@
  *    surface touched; it replaces the built-in under the same name).
  *  - `async_tools`   — minimal job control: wait / kill.
  *  - `/async_jobs`   — human-facing job overview.
- *  - widget          — below-editor count of running jobs (oculus pattern).
+ *  - status item     — footer `async: N running` badge, green (guardrails/oculus styling).
  *
  * MCP tools are deliberately left synchronous (blocking): covering them
  * transparently is not achievable as an extension (see README.md), and no

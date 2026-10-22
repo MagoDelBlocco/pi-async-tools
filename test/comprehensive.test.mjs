@@ -5,7 +5,7 @@
 //   S2  util.ts unit trials          (flag parsing, abort-aware race)
 //   S3  engine.ts unit trials        (handoff race, nested mode, signal linking, UI, delivery)
 //   S4  integration: index.ts+tools  (registration, bash override, async_tools, /async_jobs,
-//                                     widget, nested tracking, shutdown, flags, concurrency)
+//                                     status item, nested tracking, shutdown, flags, concurrency)
 //
 // Real bash processes are spawned in S4; thresholds are shrunk via the flag store to
 // keep the battery fast. Each block gets an isolated extension instance.
@@ -295,7 +295,7 @@ await test("S1.12 onObserve fires on every settle regardless of notify policy", 
 	const seen = [];
 	reg.onSettle((j) => notices.push(j.id));
 	const off = reg.onObserve((j) => seen.push(`${j.id}:${j.state}`));
-	// The stale-widget trap: a plain sync job settles WITHOUT notifying — the
+	// The stale-status trap: a plain sync job settles WITHOUT notifying — the
 	// observer must still fire, the settle listener must not.
 	const j1 = reg.spawn({ toolName: "bash", label: "sync", runner: async () => ok("v") });
 	await j1.settled;
@@ -527,89 +527,60 @@ await test("S3.10 notification truncates huge results", async () => {
 	assert.ok(notice.length < 7000, `notice kept under the cap (${notice.length})`);
 });
 
-// Widget content is now a factory (theme-colored Component) or undefined (hidden).
-const widgetTheme = { fg: (c, s) => `<${c}>${s}</>`, bold: (s) => `*${s}*` };
-function widgetLines(content, width = 200) {
-	return typeof content === "function" ? content({}, widgetTheme).render(width) : content;
-}
+// Footer status styling per the guardrails/oculus convention: fg inside bg.
+const statusTheme = { fg: (c, s) => `<${c}>${s}</>`, bg: (b, s) => `[${b}]${s}` };
 
-await test("S3.11 setupUi: status line + widget repaint without setWidget support", async () => {
+await test("S3.11 setupUi: status repaints without theme support (plain label fallback)", async () => {
 	const pi = makeEnginePi("40");
 	const engine = createEngine(pi.api);
 	const statuses = [];
-	const uiNoWidget = { setStatus: (k, v) => statuses.push([k, v]), notify: () => {} };
-	const ctx = engineCtx({ uiExtras: uiNoWidget });
+	const uiNoTheme = { setStatus: (k, v) => statuses.push([k, v]), notify: () => {} };
+	const ctx = engineCtx({ uiExtras: uiNoTheme });
 	engine.setLiveCtx(ctx); // production invariant: tools set the live context
-	engine.setupUi(ctx); // must not throw without setWidget support
+	engine.setupUi(ctx); // must not throw when the UI has no theme
 	await engine.runManaged({ toolName: "t", label: "x", nested: false, ctx, onUpdate: undefined, work: async () => (await sleep(150), ok("v")) });
-	assert.deepEqual(statuses[0], ["async-tools", undefined]); // initial: no jobs
-	assert.ok(statuses.some(([, v]) => v === "1 async job"), "status shows the running job");
+	assert.deepEqual(statuses[0], ["async", undefined]); // idle: no footer element
+	assert.ok(statuses.some(([, v]) => v === "async: 1 running"), "unthemed UI still gets the plain label");
 	await engine.registry.get("job-1").settled;
 	assert.equal(statuses.at(-1)[1], undefined, "status clears after settle");
 });
 
-await test("S3.12 setupUi widget paints from registry snapshot and clears on settle", async () => {
+await test("S3.12 footer status: green `async: N running` badge while jobs run, hidden when idle", async () => {
 	const pi = makeEnginePi("40");
 	const engine = createEngine(pi.api);
-	const widgets = [];
-	const ui = { setStatus: () => {}, notify: () => {}, setWidget: (key, lines, opts) => widgets.push({ key, lines, opts }) };
+	const statuses = [];
+	const ui = { setStatus: (k, v) => statuses.push([k, v]), notify: () => {}, theme: statusTheme };
+	engine.setLiveCtx(engineCtx({ uiExtras: ui }));
 	engine.setupUi(engineCtx({ uiExtras: ui }));
-	assert.equal(widgets.at(-1).lines, undefined, "no jobs: widget hidden (undefined content)");
-	await engine.runManaged({ toolName: "t", label: "widget-job", nested: false, ctx: engineCtx({ uiExtras: ui }), onUpdate: undefined, work: async () => (await sleep(150), ok("v")) });
-	const painted = widgetLines(widgets.at(-1).lines);
-	assert.match(painted[0], /Async: 1 background job running/);
-	assert.match(painted[1], /job-1.*t: widget-job/);
-	assert.ok(painted.every((l) => l.includes("<success>")), "every widget line is theme-green (success token)");
+	assert.deepEqual(statuses.at(-1), ["async", undefined], "idle: element absent");
+	const run = engine.runManaged({ toolName: "t", label: "job-status", nested: false, ctx: engineCtx({ uiExtras: ui }), onUpdate: undefined, work: async () => (await sleep(150), ok("v")) });
+	await sleep(30); // observe the running paint before the job settles
+	assert.deepEqual(statuses.at(-1), ["async", "[toolSuccessBg]<success>async: 1 running</>"], "guardrails-style badge");
+	await run;
 	await engine.registry.get("job-1").settled;
-	assert.equal(widgets.at(-1).lines, undefined, "settled: widget removed entirely");
+	assert.equal(statuses.at(-1)[1], undefined, "hidden once the job settles");
 });
 
-await test("S3.13 stale-widget regression: settle of a fast sync job erases its spawn paint", async () => {
+await test("S3.13 stale-status regression: settle of a fast sync job erases its spawn paint", async () => {
 	const pi = makeEnginePi("40");
 	const engine = createEngine(pi.api);
-	const widgets = [];
-	const ui = { setStatus: () => {}, notify: () => {}, setWidget: (key, lines, opts) => widgets.push({ key, lines, opts }) };
-	engine.setupUi(engineCtx({ uiExtras: ui }));
-	// The exact bug: spawn paints "1 background job running"; the job settles
-	// within the grace period and never notifies; only an observer wired to
-	// EVERY settle can clear that paint. Without it the line lingers forever.
-	await engine.runManaged({ toolName: "t", label: "fast", nested: false, ctx: engineCtx({ uiExtras: ui }), onUpdate: undefined, work: async () => ok("v") });
+	const statuses = [];
+	const ui = { setStatus: (k, v) => statuses.push([k, v]), notify: () => {}, theme: statusTheme };
+	const ctx = engineCtx({ uiExtras: ui });
+	engine.setLiveCtx(ctx); // production invariant: tools set the live context
+	engine.setupUi(ctx);
+	// The exact bug: spawn paints "async: 1 running"; the job settles within
+	// the grace period and never notifies; only an observer wired to EVERY
+	// settle can clear that paint. Without it the badge lingers forever.
+	await engine.runManaged({ toolName: "t", label: "fast", nested: false, ctx, onUpdate: undefined, work: async () => ok("v") });
 	await engine.registry.get("job-1").settled;
-	assert.equal(widgets.at(-1).lines, undefined, "widget hidden after the settled synchronous run");
+	assert.ok(statuses.some(([, v]) => typeof v === "string" && v.includes("async: 1 running")), "spawn painted the badge");
+	assert.equal(statuses.at(-1)[1], undefined, "status hidden after the settled synchronous run");
 	assert.equal(pi.sent.length, 0, "a synchronous run injects no notification");
 });
 
 // =========================================================================
-// S3b — widget.ts unit trials
-// =========================================================================
-
-const { setupWidget } = await jiti.import("../widget.ts");
-
-await test("S3b.1 setupWidget: headless no-op, empty snapshot hides, green cap, width clip", async () => {
-	setupWidget(undefined, () => [])(); // must not throw
-	setupWidget({}, () => [])(); // ui without setWidget
-	const hidden = [];
-	setupWidget({ setWidget: (k, l, o) => hidden.push({ k, l, o }) }, () => [])();
-	assert.equal(hidden[0].l, undefined, "empty snapshot hides the widget (undefined, not [])");
-	const many = Array.from({ length: 7 }, (_, i) => ({ id: `job-${i}`, toolName: "bash", label: `L${i}` }));
-	const seen = [];
-	const update = setupWidget({ setWidget: (k, l, o) => seen.push({ k, l, o }) }, () => many);
-	assert.equal(seen.length, 1);
-	assert.equal(seen[0].k, "async-tools:jobs");
-	assert.deepEqual(seen[0].o, { placement: "belowEditor" });
-	assert.equal(typeof seen[0].l, "function", "running jobs register a theme-colored factory");
-	const lines = widgetLines(seen[0].l);
-	assert.equal(lines.length, 7, "header + 5 entries + overflow line");
-	assert.match(lines[0], /Async: 7 background jobs running/);
-	assert.ok(lines[0].startsWith("<success>*"), "header is bold green");
-	assert.match(lines.at(-1), /\.\.\.and 2 more/);
-	assert.equal(widgetLines(seen[0].l, 12)[1], "<success>  job-0  ba…</>", "lines clip to viewport width");
-	update();
-	assert.equal(seen.length, 2, "update repaints");
-});
-
-// =========================================================================
-// S4 — integration: index.ts + tools/ + commands + widget
+// S4 — integration: index.ts + tools/ + commands + status item
 // =========================================================================
 
 report("S4 integration");
@@ -715,17 +686,17 @@ await test("S4.9 /async_jobs: empty overview and populated listing", async () =>
 	assert.match(notes.at(-1), /job-1 \[completed\] bash — sleep 0\.3 && echo LISTED/);
 });
 
-await test("S4.10 widget tracks spawn, multiple running jobs, and settle via session_start", async () => {
-	const widgets = [];
-	const ext = await newExtension({ "async-tools-timeout": "100" }, { uiExtras: { setWidget: (k, l, o) => widgets.push({ k, l, o }) } });
+await test("S4.10 footer status tracks spawn, multiple running jobs, and settle via session_start", async () => {
+	const statuses = [];
+	const ext = await newExtension({ "async-tools-timeout": "100" }, { uiExtras: { setStatus: (k, v) => statuses.push([k, v]), theme: statusTheme } });
 	await ext.dispatch("session_start");
-	assert.equal(widgets.at(-1).l, undefined, "widget hidden at session start");
+	assert.deepEqual(statuses.at(-1), ["async", undefined], "idle at session start");
 	const a = await ext.bash.execute("tc-m1", { command: "sleep 0.5 && echo A" }, ext.ac.signal, undefined, ext.ctx);
 	const b = await ext.bash.execute("tc-m2", { command: "sleep 0.6 && echo B" }, ext.ac.signal, undefined, ext.ctx);
-	assert.match(widgetLines(widgets.at(-1).l)[0], /Async: 2 background jobs running/);
+	assert.match(statuses.at(-1)[1], /async: 2 running/, "badge counts concurrent jobs");
 	await ext.waitForJob(a.details.asyncJob.id);
 	await ext.waitForJob(b.details.asyncJob.id);
-	assert.equal(widgets.at(-1).l, undefined, "widget hidden once all settle");
+	assert.equal(statuses.at(-1)[1], undefined, "hidden once all settle");
 });
 
 await test("S4.11 nested calls stay synchronous; cleanup restores handoff", async () => {
@@ -834,15 +805,15 @@ await test("S4.19 interrupted wait unclaims; delivery still arrives automaticall
 });
 
 await test("S4.20 consumed delivery still repaints the UI (wait repaints, no notice)", async () => {
-	const widgets = [];
-	const ext = await newExtension({ "async-tools-timeout": "100" }, { uiExtras: { setWidget: (k, l, o) => widgets.push({ k, l, o }) } });
+	const statuses = [];
+	const ext = await newExtension({ "async-tools-timeout": "100" }, { uiExtras: { setStatus: (k, v) => statuses.push([k, v]), theme: statusTheme } });
 	await ext.dispatch("session_start");
 	const r = await ext.bash.execute("tc-rp", { command: "sleep 0.3 && echo REPAINT-OK" }, ext.ac.signal, undefined, ext.ctx);
 	const jobId = r.details.asyncJob.id;
-	assert.match(widgetLines(widgets.at(-1).l)[0], /Async: 1 background job running/);
+	assert.match(statuses.at(-1)[1], /async: 1 running/);
 	const waited = await ext.waitForJob(jobId);
 	assert.match(text(waited), /REPAINT-OK/);
-	assert.equal(widgets.at(-1).l, undefined, "wait itself hid the widget");
+	assert.equal(statuses.at(-1)[1], undefined, "wait itself hid the status");
 	await sleep(50);
 	assert.equal(ext.fake.sent.length, 0, "consumed delivery injects no notice");
 });

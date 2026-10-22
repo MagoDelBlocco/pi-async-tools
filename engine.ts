@@ -3,7 +3,7 @@
  *
  * Owns the job registry, the automatic handoff race, handoff placeholders,
  * turn-signal linking, completion notification injection, and the UI
- * (footer status line + oculus-style below-editor widget).
+ * (footer status item, styled per the guardrails/oculus convention).
  * Delivery: while the agent runs, results are steered — delivered after the
  * current assistant turn's tool calls, before its next LLM call. When idle,
  * completion triggers a turn so no result is orphaned.
@@ -24,7 +24,6 @@ import {
 	JobResult,
 } from "./jobs.ts";
 import { parseTimeoutMs } from "./util.ts";
-import { setupWidget } from "./widget.ts";
 
 export const CUSTOM_TYPE_RESULT = "async-tools:job-result";
 export const NOTIFY_CONTENT_MAX = 6000;
@@ -55,9 +54,9 @@ export interface AsyncEngine {
 	/** Tool-call ids issued by another tool (parentToolCallId set), tracked from `tool_call`. */
 	nestedCallIds: Set<string>;
 	setLiveCtx(ctx: ExtensionContext): void;
-	/** Install the session UI: status line + running-jobs widget (oculus pattern). */
+	/** Install the session UI: the footer status item (guardrails/oculus pattern). */
 	setupUi(ctx: ExtensionContext): void;
-	/** Repaint status line and widget from current registry state. */
+	/** Repaint the footer status item from current registry state. */
 	refreshUi(): void;
 	runManaged(o: ManagedRunOptions): Promise<AgentToolResult<AsyncJobDetails>>;
 	/** Handoff threshold in ms, re-read per call so flag changes apply. */
@@ -68,13 +67,23 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 	const registry = new JobRegistry("job");
 	const nestedCallIds = new Set<string>();
 	let liveCtx: ExtensionContext | undefined;
-	let widgetUpdate: (() => void) | undefined;
 	let lastUiError: string | undefined;
 
 	function setStatusLine(ctx?: ExtensionContext): void {
 		const n = registry.running().length;
+		const ui = (ctx ?? liveCtx)?.ui;
 		try {
-			(ctx ?? liveCtx)?.ui.setStatus("async-tools", n > 0 ? `${n} async job${n === 1 ? "" : "s"}` : undefined);
+			if (!ui) return;
+			if (n === 0) {
+				ui.setStatus("async", undefined); // idle: no footer element at all
+				return;
+			}
+			// guardrails/oculus convention: `name: state` label, success fg on toolSuccessBg.
+			const label = `async: ${n} running`;
+			ui.setStatus(
+				"async",
+				typeof ui.theme?.fg === "function" ? ui.theme.bg("toolSuccessBg", ui.theme.fg("success", label)) : label,
+			);
 		} catch (err) {
 			// Status UI is unavailable in some modes (print/json); record and carry on —
 			// jobs and notifications are independent of rendering.
@@ -84,19 +93,12 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 
 	function refreshUi(): void {
 		setStatusLine();
-		try {
-			widgetUpdate?.();
-		} catch (err) {
-			// Same rule for the widget: rendering failures never touch jobs.
-			lastUiError = err instanceof Error ? err.message : String(err);
-		}
 	}
 
 	function setupUi(ctx: ExtensionContext): void {
-		// Single source of truth: the widget reads the registry at render time.
-		widgetUpdate = setupWidget(ctx.ui, () =>
-			registry.running().map((j) => ({ id: j.id, toolName: j.toolName, label: j.label })),
-		);
+		// Footer status item only — the count reads the registry at render time
+		// (single source of truth). No below-editor widget: one compact slot,
+		// like guardrails and oculus own theirs.
 		setStatusLine(ctx);
 	}
 
@@ -121,8 +123,8 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 	});
 
 	// Repaint on EVERY settle, notified or not: a fast synchronous call never
-	// sends a notification, and riding the notify path would leave the widget
-	// frozen on its spawn-time "running" paint forever.
+	// sends a notification, and riding the notify path would leave the status
+	// stuck on its spawn-time "1 running" forever.
 	registry.onObserve(() => refreshUi());
 
 	function handoffPlaceholder(job: Job, graceMs: number): AgentToolResult<AsyncJobDetails> {

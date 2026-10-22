@@ -149,26 +149,22 @@ assert.deepEqual(verbs.sort(), ["kill", "wait"], "actions are wait/kill only");
 	report("ok  kill: async_tools kill terminates a running job; wait reports cancelled");
 }
 
-// --- widget: oculus-style snapshot over the registry (green; hidden when idle) ---
+// --- footer status: guardrails/oculus-styled badge from registry state ---
 {
 	fake.flags.set("async-tools-timeout", "200");
 	const ac = new AbortController();
-	const widgets = [];
-	const wl = (c, w = 200) => (typeof c === "function" ? c({}, { fg: (_x, s) => s, bold: (s) => s }).render(w) : c);
+	const statuses = [];
 	const ctx = makeCtx(fake, ac.signal);
-	ctx.ui.setWidget = (key, content, opts) => widgets.push({ key, content, opts });
+	ctx.ui.setStatus = (key, text) => statuses.push([key, text]);
+	ctx.ui.theme = { fg: (c, s) => `<${c}>${s}</>`, bg: (b, s) => `[${b}]${s}` };
 	for (const h of fake.events.get("session_start")) await h({}, ctx);
-	assert.equal(widgets.at(-1).content, undefined, "widget hidden at start (no running jobs)");
-	const result = await bash.execute("tc-widget", { command: "sleep 2 && echo WIDGET-OK" }, ac.signal, undefined, ctx);
+	assert.deepEqual(statuses.at(-1), ["async", undefined], "idle at session start");
+	const result = await bash.execute("tc-status", { command: "sleep 2 && echo STATUS-OK" }, ac.signal, undefined, ctx);
 	const jobId = result.details.asyncJob.id;
-	const shown = widgets.at(-1);
-	assert.equal(shown.key, "async-tools:jobs");
-	assert.equal(shown.opts.placement, "belowEditor");
-	assert.match(wl(shown.content)[0], /Async: 1 background job running/);
-	assert.ok(wl(shown.content)[1].includes(jobId), "widget lists the running job id");
-	await asyncTools.execute("tc-widget-wait", { action: "wait", job: jobId, timeout: 15 }, ac.signal, undefined, ctx);
-	assert.equal(widgets.at(-1).content, undefined, "widget hidden when no jobs run");
-	report("ok  widget: green below-editor count from registry snapshot; hidden when idle");
+	assert.deepEqual(statuses.at(-1), ["async", "[toolSuccessBg]<success>async: 1 running</>"], "green badge while the job runs");
+	await asyncTools.execute("tc-status-wait", { action: "wait", job: jobId, timeout: 15 }, ac.signal, undefined, ctx);
+	assert.equal(statuses.at(-1)[1], undefined, "hidden when no jobs run");
+	report("ok  status: green `async: N running` badge from registry state; hidden when idle");
 }
 
 report("all loader trials passed");

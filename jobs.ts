@@ -129,7 +129,7 @@ export class JobRegistry {
 	 * Observe EVERY settle, independent of the notification policy: settle
 	 * listeners fire only for jobs marked for notify (or claimed/unclaimed),
 	 * so UI repaints must not ride that path — a fast synchronous job that
-	 * never notifies would otherwise leave the widget frozen on its
+	 * never notifies would otherwise leave the footer status frozen on its
 	 * spawn-time "running" paint. Returns an unsubscribe function.
 	 */
 	onObserve(listener: (job: Job) => void): () => void {
