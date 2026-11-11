@@ -32,7 +32,7 @@ export interface Job {
 	result?: JobResult;
 	/** Failure text once failed/cancelled. */
 	error?: string;
-	/** True once the result has reached the model — via the settle notification
+	/** True once the result has been queued for the model — via the settle notification
 	 * or by direct consumption (async_tools wait/kill claimed the delivery). */
 	notified: boolean;
 	/** True while a waiter (async_tools wait/kill) owns delivery; the settle
@@ -105,18 +105,28 @@ export class JobRegistry {
 
 	constructor(private prefix = "job") {}
 
-	/** Fire the user-facing completion notification exactly once per job. */
+	/** Attempt delivery; a failed listener leaves the notification pending for retry. */
 	private fireNotify(job: Job): void {
 		if (!job.notifyPending || job.notified || job.deliveryClaimed) return;
-		job.notified = true;
+		let delivered = true;
 		for (const listener of this.settleListeners) {
 			try {
 				listener(job);
 			} catch (err) {
+				delivered = false;
 				// A notification failure must never break the job or the runtime; record it on the job.
 				job.notifyError = err instanceof Error ? err.message : String(err);
 			}
 		}
+		if (delivered) {
+			job.notified = true;
+			job.notifyError = undefined;
+		}
+	}
+
+	/** Retry a settled job whose notification failed. Claims still suppress delivery. */
+	retryNotify(job: Job): void {
+		if (job.state !== "running") this.fireNotify(job);
 	}
 
 	/** Register a settle (completion/failure/cancel) listener. Returns an unsubscribe function. */

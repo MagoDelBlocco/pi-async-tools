@@ -223,11 +223,19 @@ await test("S1.7 onSettle unsubscribe stops notifications", async () => {
 
 await test("S1.8 throwing listener is recorded on the job, never escapes", async () => {
 	const reg = new JobRegistry("job");
-	reg.onSettle(() => { throw new Error("listener died"); });
+	let attempts = 0;
+	reg.onSettle(() => { if (++attempts === 1) throw new Error("listener died"); });
 	const job = reg.spawn({ toolName: "t", label: "l", background: true, runner: async () => ok("x") });
 	await job.settled;
 	assert.equal(job.notifyError, "listener died");
+	assert.equal(job.notified, false, "a failed send must remain pending");
 	assert.equal(job.state, "completed", "job lifecycle unaffected");
+	reg.retryNotify(job);
+	assert.equal(attempts, 2);
+	assert.equal(job.notified, true, "retry marks delivery only after success");
+	assert.equal(job.notifyError, undefined);
+	reg.retryNotify(job);
+	assert.equal(attempts, 2, "successful delivery is not repeated");
 });
 
 await test("S1.9 formatters: flatten, elapsed, describeJob, formatJobNotice", async () => {
@@ -527,6 +535,48 @@ await test("S3.10 notification truncates huge results", async () => {
 	assert.ok(notice.length < 7000, `notice kept under the cap (${notice.length})`);
 });
 
+await test("S3.10a failed sendMessage retries and delivers once", async () => {
+	const pi = makeEnginePi("20");
+	let attempts = 0;
+	pi.api.sendMessage = (msg, opts) => {
+		if (++attempts === 1) throw new Error("send unavailable");
+		pi.sent.push({ msg, opts });
+	};
+	const engine = createEngine(pi.api);
+	const handoff = await engine.runManaged({
+		toolName: "t", label: "retry", nested: false, ctx: engineCtx(), onUpdate: undefined,
+		work: async () => (await sleep(80), ok("RETRY-TOKEN")),
+	});
+	const job = engine.registry.get(handoff.details.asyncJob.id);
+	await job.settled;
+	assert.equal(job.notified, false);
+	assert.equal(job.notifyError, "send unavailable");
+	await sleep(1150);
+	assert.equal(attempts, 2);
+	assert.equal(pi.sent.length, 1);
+	assert.match(pi.sent[0].msg.content, /RETRY-TOKEN/);
+	assert.equal(job.notified, true);
+	engine.stopNotifications();
+});
+
+await test("S3.10b consuming a failed notice suppresses its retry", async () => {
+	const pi = makeEnginePi("20");
+	let attempts = 0;
+	pi.api.sendMessage = () => { attempts++; throw new Error("send unavailable"); };
+	const engine = createEngine(pi.api);
+	const handoff = await engine.runManaged({
+		toolName: "t", label: "claim", nested: false, ctx: engineCtx(), onUpdate: undefined,
+		work: async () => (await sleep(80), ok("CLAIMED")),
+	});
+	const job = engine.registry.get(handoff.details.asyncJob.id);
+	await job.settled;
+	assert.equal(attempts, 1);
+	engine.registry.claimDelivery(job);
+	engine.registry.retryNotify(job);
+	assert.equal(attempts, 1, "claimed result cannot be retried");
+	engine.stopNotifications();
+});
+
 // Footer status styling per the guardrails/oculus convention: fg inside bg.
 const statusTheme = { fg: (c, s) => `<${c}>${s}</>`, bg: (b, s) => `[${b}]${s}` };
 
@@ -633,7 +683,7 @@ await test("S4.5 handoff: placeholder with job id, then full result delivered", 
 	assert.equal(r.details.asyncJob.handoffMs, 150);
 	const waited = await ext.waitForJob(jobId);
 	assert.match(text(waited), /DELIVERED-TOKEN/);
-	assert.match(text(waited), /\[completed\]/);
+	assert.equal(waited.isError, undefined);
 	await sleep(50);
 	assert.equal(ext.fake.sent.length, 0, "wait consumed the result; no duplicate notice");
 });
@@ -656,9 +706,23 @@ await test("S4.7 wait on failed handoff reports failure with command output", as
 	const r = await ext.bash.execute("tc-f", { command: "echo out-before-fail; sleep 0.3; exit 3" }, ext.ac.signal, undefined, ext.ctx);
 	const jobId = r.details.asyncJob.id;
 	const waited = await ext.waitForJob(jobId);
-	assert.match(text(waited), /\[failed\]/);
+	assert.equal(waited.isError, true);
 	assert.match(text(waited), /out-before-fail/);
 	assert.match(text(waited), /exited with code 3/);
+});
+
+await test("S4.7a wait returns complete output and original error details", async () => {
+	const ext = await newExtension({ "async-tools-timeout": "80" });
+	const marker = "TAIL-" + "Z".repeat(32);
+	const command = `for i in {1..90}; do echo ${"A".repeat(100)}; done; echo ${marker}; sleep 0.2; exit 7`;
+	const r = await ext.bash.execute("tc-full", { command }, ext.ac.signal, undefined, ext.ctx);
+	const waited = await ext.waitForJob(r.details.asyncJob.id);
+	assert.equal(waited.isError, true);
+	assert.match(text(waited), new RegExp(marker));
+	assert.ok(text(waited).length > 9000, "wait preserves output beyond the notification cap");
+	assert.match(text(waited), /exited with code 7/);
+	assert.equal(waited.structuredContent?.exit_code, 7, "wait preserves the original structured result");
+	assert.equal(ext.fake.sent.length, 0, "consumed result is not notified again");
 });
 
 await test("S4.8 wait/kill: unknown job ids error; kill of settled job reports honestly", async () => {

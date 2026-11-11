@@ -9,7 +9,7 @@
 import { type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { NOTIFY_CONTENT_MAX, AsyncEngine } from "../engine.ts";
+import { AsyncEngine } from "../engine.ts";
 import { type Job, describeJob } from "../jobs.ts";
 import { raceWithAbort } from "../util.ts";
 
@@ -76,8 +76,17 @@ async function waitJob(
 ): Promise<AgentToolResult<unknown>> {
 	const job = engine.registry.get(id);
 	if (!job) return text(`Unknown job id "${id}".`, true);
-	if (job.state !== "running") return text(describeJob(job, NOTIFY_CONTENT_MAX));
+	if (job.state !== "running") {
+		engine.registry.claimDelivery(job);
+		return settledResult(job);
+	}
 	return await awaitedDelivery(engine, job, timeout, signal);
+}
+
+/** Return the original tool result intact, including full output and error metadata. */
+function settledResult(job: Job): AgentToolResult<unknown> {
+	if (job.result) return job.result as AgentToolResult<unknown>;
+	return text(describeJob(job), job.state === "failed");
 }
 
 /** Blocking half of wait: claim the delivery, race, unclaim if abandoned. */
@@ -97,5 +106,5 @@ async function awaitedDelivery(
 
 	if (outcome === "timeout") return text(`Job ${job.id} still running after ${Math.round(capMs / 1000)}s (${describeJob(job, 0)}).`);
 	if (outcome === "aborted") return text(`Wait interrupted; job ${job.id} continues in the background (${describeJob(job, 0)}).`);
-	return text(describeJob(job, NOTIFY_CONTENT_MAX));
+	return settledResult(job);
 }

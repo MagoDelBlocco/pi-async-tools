@@ -79,6 +79,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		// Idempotent: never leave orphaned background work behind.
+		engine.stopNotifications();
 		engine.registry.cancelAll();
 	});
 }

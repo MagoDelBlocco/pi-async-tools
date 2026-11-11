@@ -19,7 +19,8 @@ threshold (default 5000 ms), it is handed off to a background job:
    The notification is a safety net, never a duplicate: if the model already
    consumed the result through `async_tools wait` (or ended it with `kill`),
    the delivery is claimed and no notice is injected. An abandoned wait
-   (timeout or interruption) restores the automatic delivery.
+   (timeout or interruption) restores the automatic delivery. A failed
+   `sendMessage` call is retried with backoff while the session remains open.
 
 The model manages a job only when it chooses to, through two operations:
 `wait` (block for the result) and `kill` (terminate it). There is no explicit
@@ -105,7 +106,8 @@ the real, final result.
    later is necessarily a *new* message (`pi.sendMessage`), so context grows
    by one message per completed job (content truncated to 6 KB) — unless the
    model consumed it directly via `async_tools wait`/`kill`, which claims the
-   delivery and suppresses the notice.
+   delivery and suppresses the notice. `wait` returns the stored tool result,
+   including its original output, error flag, and structured content.
 8. **Steering boundaries are Pi's, not the extension's.** A steered result
    lands after the current tool batch; if the agent finishes before the job
    settles, delivery falls back to a new triggered turn.
@@ -133,7 +135,7 @@ the real, final result.
 ```bash
 node test/engine.test.mjs         # 8 engine trials
 node test/loader.test.mjs         # 6 integration trials
-node test/comprehensive.test.mjs  # 45 trials (unit + integration + edge cases)
+node test/comprehensive.test.mjs  # 50 trials (unit + integration + edge cases)
 
 # Live rites (run from a clean directory without local .pi state):
 pi --extension ./index.ts --async-tools-timeout 1200 -p 'long bash + independent calls + wait/kill'

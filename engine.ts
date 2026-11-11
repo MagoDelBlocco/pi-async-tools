@@ -58,6 +58,8 @@ export interface AsyncEngine {
 	setupUi(ctx: ExtensionContext): void;
 	/** Repaint the footer status item from current registry state. */
 	refreshUi(): void;
+	/** Stop queued notification retries during session shutdown. */
+	stopNotifications(): void;
 	runManaged(o: ManagedRunOptions): Promise<AgentToolResult<AsyncJobDetails>>;
 	/** Handoff threshold in ms, re-read per call so flag changes apply. */
 	timeoutMs(): number;
@@ -68,6 +70,31 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 	const nestedCallIds = new Set<string>();
 	let liveCtx: ExtensionContext | undefined;
 	let lastUiError: string | undefined;
+	let notificationsStopped = false;
+	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	const retryAttempts = new Map<string, number>();
+
+	function scheduleRetry(job: Job): void {
+		if (notificationsStopped || retryTimers.has(job.id)) return;
+		const attempt = retryAttempts.get(job.id) ?? 0;
+		const delay = Math.min(1000 * 2 ** Math.min(attempt, 5), 30000);
+		retryAttempts.set(job.id, attempt + 1);
+		const timer = setTimeout(() => {
+			retryTimers.delete(job.id);
+			if (!notificationsStopped) {
+				registry.retryNotify(job);
+				if (job.notified || job.deliveryClaimed) retryAttempts.delete(job.id);
+			}
+		}, delay);
+		retryTimers.set(job.id, timer);
+	}
+
+	function stopNotifications(): void {
+		notificationsStopped = true;
+		for (const timer of retryTimers.values()) clearTimeout(timer);
+		retryTimers.clear();
+		retryAttempts.clear();
+	}
 
 	function setStatusLine(ctx?: ExtensionContext): void {
 		const n = registry.running().length;
@@ -103,6 +130,7 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 	}
 
 	function notifyJob(job: Job): void {
+		if (notificationsStopped) return;
 		// Mid-run: steer, so the result lands after the agent's current tool
 		// batch and before its next LLM call (Pi's steering boundary). Idle:
 		// trigger a turn — otherwise the result would never be seen.
@@ -117,9 +145,10 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 		try {
 			notifyJob(job);
 		} catch (err) {
-			// Never let notification failures escape into the job lifecycle.
-			job.notifyError = err instanceof Error ? err.message : String(err);
+			scheduleRetry(job);
+			throw err; // Registry records the failure and leaves delivery pending.
 		}
+		retryAttempts.delete(job.id);
 	});
 
 	// Repaint on EVERY settle, notified or not: a fast synchronous call never
@@ -200,6 +229,7 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 		},
 		setupUi,
 		refreshUi,
+		stopNotifications,
 		runManaged,
 		timeoutMs,
 	};
