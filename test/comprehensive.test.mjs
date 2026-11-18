@@ -722,6 +722,7 @@ await test("S4.7a wait returns complete output and original error details", asyn
 	assert.ok(text(waited).length > 9000, "wait preserves output beyond the notification cap");
 	assert.match(text(waited), /exited with code 7/);
 	assert.equal(waited.structuredContent?.exit_code, 7, "wait preserves the original structured result");
+	assert.deepEqual(waited.details?.asyncJobCompletion, { id: r.details.asyncJob.id, state: "failed" }, "wait identifies the settled job for other extensions");
 	assert.equal(ext.fake.sent.length, 0, "consumed result is not notified again");
 });
 
@@ -839,6 +840,7 @@ await test("S4.17 kill suppresses the duplicate cancelled notice", async () => {
 	const r = await ext.bash.execute("tc-kn", { command: "sleep 30" }, ext.ac.signal, undefined, ext.ctx);
 	const killed = await ext.asyncTools.execute("tc-kn2", { action: "kill", job: r.details.asyncJob.id }, ext.ac.signal, undefined, ext.ctx);
 	assert.match(text(killed), /Killed job-/);
+	assert.deepEqual(killed.details?.asyncJobCompletion, { id: r.details.asyncJob.id, state: "cancelled" });
 	await sleep(80);
 	assert.equal(ext.fake.sent.length, 0, "the Killed result already informed the model");
 });

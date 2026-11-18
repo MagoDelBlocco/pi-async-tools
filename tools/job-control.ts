@@ -20,6 +20,15 @@ function text(t: string, isError = false): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text: t }], details: undefined, ...(isError ? { isError: true } : {}) };
 }
 
+/** A machine-readable completion marker for extensions observing a claimed result. */
+function completedJobResult(job: Job, result: AgentToolResult<unknown>): AgentToolResult<unknown> {
+	const original = result.details;
+	const details = original && typeof original === "object" && !Array.isArray(original)
+		? original as Record<string, unknown>
+		: {};
+	return { ...result, details: { ...details, asyncJobCompletion: { id: job.id, state: job.state } } };
+}
+
 export function registerAsyncTools(pi: ExtensionAPI, engine: AsyncEngine): void {
 	pi.registerTool({
 		name: "async_tools",
@@ -52,20 +61,23 @@ async function runAction(
 	if (!found) {
 		return text(`Unknown job id "${params.job}". Job ids come from async handoff messages; see /async_jobs for the human-facing overview.`, true);
 	}
-	if (params.action === "kill") return killJob(engine, found.id);
+	if (params.action === "kill") return await killJob(engine, found.id);
 	return await waitJob(engine, found.id, params.timeout, signal);
 }
 
-function killJob(engine: AsyncEngine, id: string): AgentToolResult<unknown> {
+async function killJob(engine: AsyncEngine, id: string): Promise<AgentToolResult<unknown>> {
 	const job = engine.registry.cancel(id);
 	if (!job) return text(`Job ${id} had already settled; nothing to kill.`, true);
 	if (job.state === "cancelled") {
 		// The "Killed" result itself informs the model; suppress the duplicate
 		// cancelled-notification.
 		engine.registry.claimDelivery(job);
-		return text(`Killed ${job.id}.`);
+		// Cancellation marks the job immediately, but the shell may take another
+		// moment to exit. Only report completion after it can no longer write.
+		await job.settled;
+		return completedJobResult(job, text(`Killed ${job.id}.`));
 	}
-	return text(`Job ${job.id} had already settled (${job.state}).`);
+	return completedJobResult(job, text(`Job ${job.id} had already settled (${job.state}).`));
 }
 
 async function waitJob(
@@ -78,15 +90,16 @@ async function waitJob(
 	if (!job) return text(`Unknown job id "${id}".`, true);
 	if (job.state !== "running") {
 		engine.registry.claimDelivery(job);
+		await job.settled;
 		return settledResult(job);
 	}
 	return await awaitedDelivery(engine, job, timeout, signal);
 }
 
-/** Return the original tool result intact, including full output and error metadata. */
+/** Preserve the result content and error metadata, adding a completion marker. */
 function settledResult(job: Job): AgentToolResult<unknown> {
-	if (job.result) return job.result as AgentToolResult<unknown>;
-	return text(describeJob(job), job.state === "failed");
+	if (job.result) return completedJobResult(job, job.result as AgentToolResult<unknown>);
+	return completedJobResult(job, text(describeJob(job), job.state === "failed"));
 }
 
 /** Blocking half of wait: claim the delivery, race, unclaim if abandoned. */

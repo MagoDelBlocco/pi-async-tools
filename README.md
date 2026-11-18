@@ -27,6 +27,13 @@ The model manages a job only when it chooses to, through two operations:
 `async` argument anywhere: an earlier "Strategy A" was excised because it
 burdens the model with an orchestration decision it should not own.
 
+For extensions that track side effects, the handoff placeholder carries
+`details.asyncJob.id`. Automatic completion arrives as a custom message with
+`customType: "async-tools:job-result"` and `details.jobId`; a claimed result
+returned by `async_tools wait` or `kill` carries `details.asyncJobCompletion`
+with the job id and final state. Timeout and interrupted waits carry no
+completion marker.
+
 ## Scope: bash only — MCP calls remain synchronous
 
 The extension introduces **no new tool names** beyond `async_tools`:
