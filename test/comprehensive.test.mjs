@@ -421,6 +421,8 @@ await test("S3.3 slow runManaged handoff: placeholder text and details.asyncJob"
 	const body = text(result);
 	assert.match(body, new RegExp(jobId));
 	assert.match(body, /proceed with outstanding work that is NOT dependent/i);
+	assert.match(body, /play devil's advocate/i);
+	assert.match(body, /do not backtrack/i);
 	assert.match(body, /\{"action":"wait","job":"job-1","timeout":60\}/);
 	assert.match(body, /\{"action":"kill","job":"job-1"\}/);
 	await engine.registry.get(jobId).settled;

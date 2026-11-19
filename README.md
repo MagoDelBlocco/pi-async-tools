@@ -10,6 +10,10 @@ threshold (default 5000 ms), it is handed off to a background job:
 
 1. The model receives a placeholder: *"Call moved to background as job-N …
    you may proceed with outstanding work that is NOT dependent on this call."*
+   The placeholder also tells the model that if this is the final task and the
+   result is not needed to finish the answer, it should recap and re-check its
+   changes, play devil's advocate, fix only a confidently identified mistake,
+   and return control instead of blocking on `async_tools wait`.
 2. The job keeps running detached from the turn's abort signal.
 3. On completion the real result is delivered automatically:
    - **agent mid-run** → delivered as steering: after the current assistant

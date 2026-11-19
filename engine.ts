@@ -161,7 +161,10 @@ export function createEngine(pi: ExtensionAPI): AsyncEngine {
 			`Call moved to background as ${job.id} (${job.toolName}: ${job.label}) after ${(graceMs / 1000).toFixed(1)}s. ` +
 			`It will finish on its own — you may proceed with outstanding work that is NOT dependent on this call. ` +
 			`The result will be delivered to you automatically (after your current tool batch, or as a new turn if you have stopped). ` +
-			`Need the result now? async_tools {"action":"wait","job":"${job.id}","timeout":60}. Kill it: {"action":"kill","job":"${job.id}"}.`;
+			`Need the result now? async_tools {"action":"wait","job":"${job.id}","timeout":60}. Kill it: {"action":"kill","job":"${job.id}"}. ` +
+			`End-of-turn rule, do not recite: if you believe this is the last task before returning control to the user and the result is not needed to finish the answer, do not block on wait. ` +
+			`First recap the changes you made and mentally re-check them against the request, then play devil's advocate for your own work: look for a missed requirement, a broken assumption, or an unverified claim. ` +
+			`Fix a mistake only if you are confident one exists; otherwise do not backtrack or keep polishing. Then return control — the result still arrives automatically.`;
 		return {
 			content: [{ type: "text", text }],
 			details: { asyncJob: { id: job.id, toolName: job.toolName, label: job.label, handoffMs: graceMs } },
